@@ -1,7 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
-import fetch from "node-fetch";
 import { v2 as cloudinary } from "cloudinary";
 
 dotenv.config();
@@ -10,7 +9,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Cloudinary config
+console.log("Cloudinary Config:", process.env.CLOUDINARY_CLOUD_NAME);
+
+if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  console.error("❌ Missing Cloudinary credentials in .env");
+  process.exit(1);
+}
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -19,32 +24,34 @@ cloudinary.config({
 
 app.get("/api/getImages", async (req, res) => {
   try {
+    const result = await cloudinary.api.resources({
+      type: "upload",
+      prefix: "",
+      max_results: 500,
+      resource_type: "image",
+    });
+
+    // Group images by folder (category)
     const categories = {};
-
-    // Example: fetch images under folders in your Cloudinary account
-    const folderList = ["Category1", "Category2", "Category3"];
-
-    for (const folder of folderList) {
-      const result = await cloudinary.search
-        .expression(`folder=${folder}`)
-        .sort_by("public_id", "desc")
-        .max_results(30)
-        .execute();
-
-      categories[folder] = result.resources.map((r) => ({
-        cloudinaryUrl: r.secure_url,
-        name: r.public_id.split("/").pop(),
-        description: r.context?.custom?.description || "",
-        price: r.context?.custom?.price || "",
-      }));
-    }
+    result.resources.forEach((img) => {
+      const folder = img.folder || "Uncategorized";
+      if (!categories[folder]) categories[folder] = [];
+      categories[folder].push({
+        name: img.public_id.split("/").pop(),
+        cloudinaryUrl: img.secure_url,
+        folder: folder,
+        uploaded_at: img.created_at,
+        width: img.width,
+        height: img.height,
+      });
+    });
 
     res.json(categories);
-  } catch (error) {
-    console.error(error);
+  } catch (err) {
+    console.error("Error fetching images:", err);
     res.status(500).json({ error: "Failed to fetch images" });
   }
 });
 
-const port = process.env.PORT || 5000;
-app.listen(port, () => console.log(`✅ Server running on port ${port}`));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
