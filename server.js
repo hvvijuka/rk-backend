@@ -21,26 +21,38 @@ cloudinary.config({
 // ----------------------------
 app.get("/api/signature", (req, res) => {
   try {
-    const { folder, public_id } = req.query;
-    let { context } = req.query;
+    let { folder, public_id, context, type } = req.query;
     const timestamp = Math.floor(Date.now() / 1000);
 
-    // Decode URI encoding safely
+    // Always decode context safely
     if (context) context = decodeURIComponent(context);
 
-    // Build parameters to sign
-    const paramsToSign = { timestamp };
-    if (context) paramsToSign.context = context; // must match exactly
+    // Default type to upload
+    if (!type) type = "upload";
+
+    // Cloudinary requires identical params to the upload/explicit call
+    // — include everything used in FormData
+    const paramsToSign = {
+      timestamp,
+      type,
+    };
+
+    // Folder must be signed if sent in upload call
     if (folder) paramsToSign.folder = folder;
     if (public_id) paramsToSign.public_id = public_id;
+    if (context) paramsToSign.context = context;
 
+    // ✅ For Cloudinary upload endpoint, `folder` and `public_id` go together
+    // ✅ For explicit endpoint, `public_id` includes full folder path already, so folder must NOT be added again
+
+    // Generate signature
     const signature = cloudinary.utils.api_sign_request(
       paramsToSign,
       process.env.CLOUDINARY_API_SECRET
     );
 
-    console.log("✅ Params to sign:", paramsToSign);
-    console.log("✅ Signature:", signature);
+    console.log("🟢 Params to sign:", paramsToSign);
+    console.log("🟢 Signature generated successfully.");
 
     res.json({
       signature,
@@ -50,7 +62,7 @@ app.get("/api/signature", (req, res) => {
     });
   } catch (err) {
     console.error("❌ Error generating signature:", err);
-    res.status(500).json({ error: "Failed to generate signature" });
+    res.status(500).json({ error: "Failed to generate Cloudinary signature" });
   }
 });
 
@@ -98,7 +110,7 @@ app.get("/api/getImages", async (req, res) => {
 
     console.log("📁 Fetching Cloudinary folders under:", MAIN_FOLDER);
 
-    // Step 1️⃣: Get all subfolders under Radha
+    // Step 1️⃣: Get all subfolders under MAIN_FOLDER
     const foldersResult = await cloudinary.api.sub_folders(MAIN_FOLDER);
     const allFolders = foldersResult.folders.map((f) => f.path);
 
@@ -106,25 +118,27 @@ app.get("/api/getImages", async (req, res) => {
     for (const folder of allFolders) {
       const searchResult = await cloudinary.search
         .expression(`folder:${folder}`)
-        .with_field("context") // ✅ ensure metadata comes back
+        .with_field("context") // ensure metadata comes back
         .sort_by("public_id", "asc")
-        .max_results(100)
+        .max_results(500) // increase if needed
         .execute();
 
       folderImages[folder] = searchResult.resources.map((r) => ({
         id: r.asset_id,
         name: r.public_id.split("/").pop(),
         url: r.secure_url,
-        category: folder.replace(`${MAIN_FOLDER}/`, ""),
-        context: r.context || {}, // ✅ preserve metadata for frontend
+        public_id: r.public_id,      // ✅ include actual public_id
+        category: folder.replace(`${MAIN_FOLDER}/`, "") || "All",
+        context: r.context || {},     // ✅ preserve metadata for frontend
       }));
     }
 
-    // Step 3️⃣: Fetch images directly under "Radha" (root-level images)
+    // Step 3️⃣: Fetch images directly under the root folder (MAIN_FOLDER)
     const rootResult = await cloudinary.search
-      .expression(`folder:${MAIN_FOLDER}`)
+      .expression(`folder:${MAIN_FOLDER} AND NOT folder:${MAIN_FOLDER}/*`) // root only
       .with_field("context")
-      .max_results(100)
+      .sort_by("public_id", "asc")
+      .max_results(500)
       .execute();
 
     if (rootResult.resources.length > 0) {
@@ -132,6 +146,7 @@ app.get("/api/getImages", async (req, res) => {
         id: r.asset_id,
         name: r.public_id.split("/").pop(),
         url: r.secure_url,
+        public_id: r.public_id,
         category: "All",
         context: r.context || {},
       }));
